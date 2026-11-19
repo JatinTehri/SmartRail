@@ -5,33 +5,34 @@
 - [x] Create GitHub repository
 - [x] Create frontend React project
 - [x] Create backend Express project
-- [ ] Configure PostgreSQL
+- [x] Configure PostgreSQL
 - [x] Configure environment variables
 - [x] Create base project structure
-- [ ] Design and create core database tables
-- [ ] Implement registration/login/logout
+- [x] Design and create core database tables
+- [x] Create development seed dataset (stations, trains, stops, coaches, seats, food menu)
+- [x] Implement registration/login/logout (Phase 2 — JWT in HttpOnly cookie, bcrypt, auth middleware)
 - [ ] Build basic navbar/layout
 
 ## Week 2 — Train & Availability
 
-- [ ] Station search
-- [ ] Train search
-- [ ] Train details
+- [x] Station search (GET /api/stations/search?q=...)
+- [x] Train search (GET /api/trains/search?fromStationId=...&toStationId=...&journeyDate=...&classCode=...)
+- [x] Train details (GET /api/trains/:trainId)
 - [ ] Coach/seat model
-- [ ] Seat availability API
-- [ ] Train search UI
-- [ ] Seat layout UI
+- [x] Seat availability API (GET /api/trains/:trainId/availability)
+- [x] Train search UI (TrainSearch.jsx, StationSelect.jsx, TrainCard.jsx)
+- [x] Seat layout UI (SeatAvailability.jsx, SeatLayout.jsx)
 
 ## Week 3 — Booking
 
-- [ ] Passenger management
+- [x] Passenger management (GET /api/passengers, POST /api/passengers, DELETE /api/passengers/:id)
 - [ ] Booking form
 - [ ] Preferences
-- [ ] Booking API
-- [ ] Temporary seat holds
-- [ ] Mock payment success/failure flow
-- [ ] PNR generation after successful payment
-- [ ] Ticket confirmation
+- [x] Booking API (POST /api/bookings with SmartRail Demo Fare Model)
+- [x] Temporary seat holds (10-minute HELD status, segregated Confirmed/RAC pools, row locks, eager expiration cleanup)
+- [x] Mock payment success/failure flow (POST /api/payments/process with retryable FAILED simulation)
+- [x] PNR generation after successful payment (10-char 'SR' + 8 uppercase alphanumeric with SAVEPOINT collision retries)
+- [x] Ticket confirmation (joined receipt returned, seat allocations HELD -> ACTIVE, idempotent replays, concurrent race safety)
 - [ ] Booking history
 - [ ] Cancellation
 

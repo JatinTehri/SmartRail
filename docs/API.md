@@ -224,7 +224,7 @@ The exact availability numbers are generated from the reservation database.
 
 ## GET /trains/:trainId
 
-Return train information and route details.
+Return train information, ordered route details, and coach configurations.
 
 ### Response
 
@@ -241,9 +241,20 @@ Return train information and route details.
       "stationId": 1,
       "stationCode": "NDLS",
       "stationName": "New Delhi",
+      "stationCity": "New Delhi",
       "stopOrder": 1,
       "arrivalTime": null,
-      "departureTime": "16:55"
+      "departureTime": "16:55",
+      "distanceKm": 0
+    }
+  ],
+  "coaches": [
+    {
+      "id": 1,
+      "coachNumber": "A1",
+      "coachType": "AC_2_TIER",
+      "classCode": "2A",
+      "seatCapacity": 52
     }
   ]
 }
@@ -253,29 +264,85 @@ Return train information and route details.
 
 ## GET /trains/:trainId/availability
 
-Return seat availability for a journey segment.
+Return seat and RAC availability for a journey segment, including coach layouts and individual seat status.
 
 ### Query Parameters
 
 ```text
-journeyDate
-sourceStationId
-destinationStationId
-classCode
+fromStationId (required, positive integer)
+toStationId   (required, positive integer)
+journeyDate   (required, YYYY-MM-DD, today or future in Asia/Kolkata)
+classCode     (optional, e.g. 2A, 3A, SL)
+```
+
+Example:
+
+```text
+GET /api/trains/1/availability?fromStationId=1&toStationId=2&journeyDate=2026-11-20&classCode=2A
 ```
 
 ### Response
 
 ```json
 {
-  "trainId": 10,
-  "journeyDate": "2026-09-15",
-  "classCode": "3A",
+  "trainId": 1,
+  "trainNumber": "DEMO-EXP-01",
+  "trainName": "SmartRail Express",
+  "journeyDate": "2026-11-20",
+  "fromStation": {
+    "id": 1,
+    "code": "NDLS",
+    "name": "New Delhi",
+    "stopOrder": 1
+  },
+  "toStation": {
+    "id": 2,
+    "code": "CNB",
+    "name": "Kanpur Central",
+    "stopOrder": 2
+  },
   "availability": {
-    "confirmed": 42,
-    "rac": 6,
-    "waitlist": 0
-  }
+    "confirmed": 52,
+    "rac": 2
+  },
+  "classes": {
+    "2A": {
+      "confirmed": 52,
+      "rac": 2
+    }
+  },
+  "coaches": [
+    {
+      "coachId": 1,
+      "coachNumber": "A1",
+      "coachType": "AC_2_TIER",
+      "classCode": "2A",
+      "seatCapacity": 52,
+      "availableConfirmed": 52,
+      "availableRac": 2,
+      "seats": [
+        {
+          "seatId": 1,
+          "seatNumber": "1",
+          "berthType": "LOWER",
+          "position": "CABIN",
+          "isWindow": true,
+          "racCapable": false,
+          "isAvailable": true
+        },
+        {
+          "seatId": 7,
+          "seatNumber": "7",
+          "berthType": "SIDE_LOWER",
+          "position": "SIDE",
+          "isWindow": true,
+          "racCapable": true,
+          "isAvailable": true,
+          "racSlotsAvailable": [1, 2]
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -354,12 +421,14 @@ Required.
 
 ### Request
 
+Supports both manual walk-in passengers and saved directory profiles (via `passengerProfileId`).
+
 ```json
 {
-  "trainId": 10,
-  "journeyDate": "2026-09-15",
+  "trainId": 1,
+  "journeyDate": "2026-12-20",
   "sourceStationId": 1,
-  "destinationStationId": 8,
+  "destinationStationId": 2,
   "classCode": "3A",
   "passengers": [
     {
@@ -370,55 +439,67 @@ Required.
       "windowPreference": false
     },
     {
-      "name": "Priya",
-      "age": 23,
-      "gender": "FEMALE",
-      "berthPreference": "LOWER",
+      "passengerProfileId": 4,
+      "berthPreference": "NONE",
       "windowPreference": true
     }
   ]
 }
 ```
 
+#### Passenger Fields Specification:
+- **Manual Passenger**: `name` (1–100 chars), `age` (1–120), and `gender` (`MALE`, `FEMALE`, `OTHER`) are **mandatory**. `berthPreference` defaults to `null`, `windowPreference` defaults to `false`.
+- **Saved Passenger (`passengerProfileId`)**: Identity fields (`name`, `age`, `gender`) are populated authoritatively from the user's saved profile in the database. Omitted preferences fall back to saved profile preferences. Explicit preferences in the payload (e.g. `berthPreference: "NONE"` or `windowPreference: false`) override saved profile preferences for this specific trip.
+
+### Pricing Model (SmartRail Demo)
+Fare calculation uses the **SmartRail Demo Fare Model** (for educational testing; not official Indian Railways fares):
+- `perPassengerFare = Math.max(minFare, Math.round(distanceKm * ratePerKm))`
+- `totalAmount = perPassengerFare * passengerCount`
+- Supported classes: `1A` (₹2.50/km, min ₹750), `EC` (₹2.00/km, min ₹600), `2A` (₹1.60/km, min ₹500), `3A` (₹1.15/km, min ₹350), `CC` (₹0.90/km, min ₹250), `SL` (₹0.45/km, min ₹150), `2S` (₹0.25/km, min ₹60).
+
 ### Internal flow
 
 ```text
 Request
   ↓
-Validate user
+Validate authentication (401 if missing/invalid)
   ↓
-Validate train and stations
+Validate input payload (400 if invalid)
   ↓
-Validate journey date
+Validate train existence and route direction (400 if reverse/invalid)
   ↓
-Start DB transaction
+Validate travel class availability on train (400 if class not operated)
   ↓
-Read current availability
+Resolve passenger identities & preferences (404 if profile unowned)
   ↓
-Lock relevant reservation rows
+Calculate distance-based demo fare
   ↓
-Run Smart Seat Allocation Engine
+Start DB transaction (pool.connect)
   ↓
-Create PENDING_PAYMENT booking
+Release expired holds older than 10 minutes
   ↓
-Create booking passengers
+Pessimistic row-level lock on candidate seats (ORDER BY s.id ASC FOR UPDATE)
   ↓
-Create HELD seat allocations
+Detect overlapping active and held allocations for segment
   ↓
-Commit temporary hold
+Segregate pools: Confirmed (non-RAC berths) vs RAC (RAC-capable berths)
   ↓
-Mock Payment
-  ↓
-SUCCESS?
-  ├─ Yes → activate allocations → CONFIRMED → generate PNR
-  └─ No  → release holds → booking cancelled
+Sufficient capacity?
+  ├─ No  → ROLLBACK → 409 SEATS_UNAVAILABLE
+  └─ Yes → Greedily allocate Confirmed then RAC slots
+             ↓
+           Create PENDING_PAYMENT booking
+             ↓
+           Create booking_passengers snapshots
+             ↓
+           Create HELD seat allocations
+             ↓
+           COMMIT
 ```
-
-Payment may occur as a separate step in V1 using mock payment.
 
 ### Response — 201
 
-The initial response represents a temporary payment hold. No PNR is returned yet.
+The response represents a **provisional 10-minute hold**. No PNR is issued yet (`pnr: null`).
 
 ```json
 {
@@ -427,32 +508,54 @@ The initial response represents a temporary payment hold. No PNR is returned yet
     "bookingId": 101,
     "pnr": null,
     "status": "PENDING_PAYMENT",
-    "trainNumber": "12951",
-    "journeyDate": "2026-09-15",
+    "trainNumber": "DEMO-EXP-01",
+    "journeyDate": "2026-12-20",
     "source": "New Delhi",
-    "destination": "Example Station",
+    "destination": "Kanpur Central",
     "classCode": "3A",
     "passengers": [
       {
         "name": "Rahul",
-        "status": "CONFIRMED",
-        "coach": "B2",
-        "seatNumber": "21",
-        "berthType": "LOWER"
+        "allocationType": "CONFIRMED",
+        "allocationStatus": "HELD",
+        "coach": "B1",
+        "seatNumber": "1",
+        "berthType": "LOWER",
+        "racSlot": null
       },
       {
         "name": "Priya",
-        "status": "CONFIRMED",
-        "coach": "B2",
-        "seatNumber": "22",
-        "berthType": "LOWER"
+        "allocationType": "RAC",
+        "allocationStatus": "HELD",
+        "coach": "B1",
+        "seatNumber": "7",
+        "berthType": "SIDE_LOWER",
+        "racSlot": 1
       }
     ],
-    "totalAmount": 1450,
+    "totalAmount": 1012,
     "paymentRequired": true
   }
 }
 ```
+
+### Provisional Status Definitions:
+- **`booking.status = "PENDING_PAYMENT"`**: Booking is unconfirmed and provisional. It will expire after 10 minutes unless payment succeeds.
+- **`booking.pnr = null`**: A valid travel PNR is issued only after successful payment confirmation.
+- **`passengers[].allocationStatus = "HELD"`**: Temporary row-locked hold reservation preventing other passengers from booking this berth/slot.
+- **`passengers[].allocationType = "CONFIRMED" | "RAC"`**: Entitlement tier secured by the hold upon eventual payment.
+
+### Error Responses
+
+- **400 Bad Request**:
+  - `VALIDATION_ERROR`: Malformed input, impossible dates, identical source/dest stations, reverse-direction travel, or class not carried by the train.
+- **401 Unauthorized**:
+  - `UNAUTHORIZED`: Missing, invalid, or expired `smartrail_token` cookie.
+- **404 Not Found**:
+  - `PASSENGER_NOT_FOUND`: Specified `passengerProfileId` does not exist or does not belong to the authenticated user.
+  - `NOT_FOUND`: Train does not exist or is inactive.
+- **409 Conflict**:
+  - `SEATS_UNAVAILABLE`: Remaining capacity (confirmed + RAC) is insufficient for the requested passenger count. Zero records are created.
 
 ### Important
 
@@ -545,49 +648,212 @@ Cancellation logic must release applicable seat allocations inside a database tr
 
 # 7. Mock Payment APIs
 
-## POST /payments/mock
+## POST /payments/process
 
-Complete the mock payment for a `PENDING_PAYMENT` booking.
+Process a mock payment for a provisional `PENDING_PAYMENT` booking, activating held seat allocations and issuing a 10-character unique travel PNR.
+
+SmartRail uses a mock payment engine powered by Node.js cryptographic randomness and strict ACID transactions with row-level locks. No real external payment gateway is contacted.
 
 ### Authentication
 
-Required.
+Required (`smartrail_token` HTTP-only cookie).
 
-### Request
+The authenticated user's ID is retrieved exclusively from the verified token claim. Client-supplied authority fields (`userId`, `user_id`, `amount`, `status`, `pnr`) are strictly forbidden and rejected.
+
+### Request Body
 
 ```json
 {
   "bookingId": 101,
-  "result": "SUCCESS"
+  "paymentMethod": "MOCK_UPI",
+  "simulateFailure": false
 }
 ```
 
-Allowed results:
+#### Fields
 
-```text
-SUCCESS
-FAILED
-CANCELLED
-```
+| Field | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `bookingId` | integer | Yes | - | Positive integer representing the booking to pay for. Must belong to authenticated user. |
+| `paymentMethod` | string | No | `"MOCK_UPI"` | Payment method string (max 30 chars). Allowed: `MOCK_UPI`, `UPI`, `DEBIT_CARD`, `CREDIT_CARD`, `NET_BANKING`. Case-insensitive. |
+| `simulateFailure` | boolean | No | `false` | Mock testing flag. When `true`, simulates a payment processor decline, records a `FAILED` payment audit row, leaves the booking `PENDING_PAYMENT`, and preserves held seats for retry within the original 10-minute window. |
 
-### Success response
+### Responses
+
+#### 1. Payment Success & Booking Confirmation — HTTP 200 OK
+
+Returned when payment succeeds and booking is confirmed:
 
 ```json
 {
-  "paymentId": 501,
-  "status": "SUCCESS",
-  "transactionReference": "MOCK-8F42A1",
+  "success": true,
+  "statusCode": 200,
+  "message": "Payment successful and booking confirmed",
+  "isIdempotent": false,
+  "payment": {
+    "id": 501,
+    "booking_id": 101,
+    "amount": "1450.00",
+    "status": "SUCCESS",
+    "payment_method": "MOCK_UPI",
+    "transaction_reference": "TXN_MOCK_f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "created_at": "2026-11-12T16:45:00.000Z"
+  },
   "booking": {
-    "bookingId": 101,
-    "pnr": "7412589630",
+    "id": 101,
+    "pnr": "SR8X2K9L3M",
+    "userId": 1,
+    "trainId": 1,
+    "journeyDate": "2026-12-25",
+    "sourceStationId": 1,
+    "destinationStationId": 2,
+    "classCode": "3A",
+    "status": "CONFIRMED",
+    "totalAmount": "1450.00",
+    "createdAt": "2026-11-12T16:40:00.000Z",
+    "updatedAt": "2026-11-12T16:45:00.000Z"
+  },
+  "passengers": [
+    {
+      "id": 201,
+      "name": "Jane Doe",
+      "age": 30,
+      "gender": "F",
+      "passengerStatus": "CONFIRMED",
+      "allocationType": "CONFIRMED",
+      "racSlot": null,
+      "allocationStatus": "ACTIVE",
+      "seatId": 45,
+      "seatNumber": "12",
+      "berthType": "LOWER",
+      "coachNumber": "B1",
+      "coachType": "AC 3 Tier"
+    }
+  ]
+}
+```
+
+#### 2. Idempotent Replay on Already-Confirmed Booking — HTTP 200 OK
+
+If a client resubmits payment for an already-confirmed booking, the transaction safely detects existing confirmation, commits no additional payment rows, and returns the existing confirmation details with `isIdempotent: true`:
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Booking is already confirmed",
+  "isIdempotent": true,
+  "payment": {
+    "id": 501,
+    "booking_id": 101,
+    "amount": "1450.00",
+    "status": "SUCCESS",
+    "payment_method": "MOCK_UPI",
+    "transaction_reference": "TXN_MOCK_f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "created_at": "2026-11-12T16:45:00.000Z"
+  },
+  "booking": {
+    "id": 101,
+    "pnr": "SR8X2K9L3M",
     "status": "CONFIRMED"
+  },
+  "passengers": []
+}
+```
+
+#### 3. Simulated Payment Failure (Retryable) — HTTP 402 Payment Required
+
+Returned when `simulateFailure: true`. The mock engine records a `FAILED` payment audit row, leaves the booking in `PENDING_PAYMENT`, retains `HELD` seat allocations, and permits another payment attempt within the original 10-minute hold window:
+
+```json
+{
+  "success": false,
+  "statusCode": 402,
+  "message": "Payment simulation failed. Your seats remain held within the 10-minute window. You may retry.",
+  "payment": {
+    "id": 502,
+    "booking_id": 101,
+    "amount": "1450.00",
+    "status": "FAILED",
+    "payment_method": "MOCK_UPI",
+    "transaction_reference": "TXN_FAIL_c9a1b2c3-d4e5-4f6a-8b9c-0d1e2f3a4b5c",
+    "created_at": "2026-11-12T16:42:00.000Z"
+  },
+  "booking": {
+    "id": 101,
+    "status": "PENDING_PAYMENT"
   }
 }
 ```
 
-On successful payment, HELD seat allocations become ACTIVE and the PNR is generated.
+### Error Responses
 
-On failed/cancelled payment, HELD allocations are released and the booking becomes CANCELLED.
+#### 400 Bad Request — Validation or Status Error
+
+- **Client Authority Field**:
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Client-supplied authority field \"userId\" is not permitted"
+  }
+}
+```
+- **Cancelled Booking**:
+```json
+{
+  "error": {
+    "code": "BOOKING_ALREADY_CANCELLED",
+    "message": "Booking has been cancelled and cannot be paid"
+  }
+}
+```
+
+#### 401 Unauthorized — Missing or Invalid Cookie
+
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Authentication required"
+  }
+}
+```
+
+#### 403 Forbidden — Ownership Mismatch
+
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "You do not have permission to pay for this booking"
+  }
+}
+```
+
+#### 404 Not Found — Booking Does Not Exist
+
+```json
+{
+  "error": {
+    "code": "BOOKING_NOT_FOUND",
+    "message": "Booking not found"
+  }
+}
+```
+
+#### 410 Gone — Booking Hold Expired (> 10 Minutes)
+
+If wall-clock time (`clock_timestamp()`) exceeds the 10-minute hold deadline when acquiring transaction locks, the engine atomically transitions allocations to `RELEASED`, marks the booking `CANCELLED`, and returns HTTP 410:
+
+```json
+{
+  "error": {
+    "code": "BOOKING_HOLD_EXPIRED",
+    "message": "Booking hold has expired and seats have been released"
+  }
+}
+```
 
 ---
 

@@ -21,7 +21,7 @@ BR-006: A booking starts in `PENDING_PAYMENT` while its selected seats are tempo
 
 BR-007: A PNR is generated only after successful payment/booking confirmation.
 
-BR-008: Failed or cancelled payment releases HELD allocations and cancels the pending booking.
+BR-008: A failed payment attempt records a `FAILED` payment audit entry, but the booking remains in `PENDING_PAYMENT` and its seat allocations remain `HELD` to permit retry within the original 10-minute hold window. A failed attempt does not extend the hold window. If the 10-minute deadline passes without a successful payment, hold expiration automatically releases the held allocations and marks the booking `CANCELLED`.
 
 ## Group Allocation
 

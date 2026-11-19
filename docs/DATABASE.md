@@ -287,7 +287,7 @@ Represents one booking/PNR.
 | Column | Type | Constraints |
 |---|---|---|
 | id | BIGSERIAL | PK |
-| pnr | VARCHAR(20) | NOT NULL, UNIQUE |
+| pnr | VARCHAR(20) | nullable, UNIQUE |
 | user_id | BIGINT | FK → users.id, NOT NULL |
 | train_id | BIGINT | FK → trains.id, NOT NULL |
 | journey_date | DATE | NOT NULL |
@@ -311,6 +311,19 @@ CANCELLED
 ```
 
 `PENDING_PAYMENT` means seats have been temporarily held for the booking while mock payment is being completed. A PNR is generated only after successful payment/confirmation.
+
+**`pnr` lifecycle:**
+
+```text
+Booking created  → pnr = NULL        (status: PENDING_PAYMENT)
+Payment succeeds → pnr = 'SR...'     (status: CONFIRMED / RAC / PARTIALLY_CONFIRMED)
+Payment fails    → pnr remains NULL  (status: PENDING_PAYMENT, retries permitted within 10m)
+Hold expires     → pnr remains NULL  (status: CANCELLED, allocations RELEASED)
+```
+
+The `UNIQUE` constraint applies only to non-NULL values. PostgreSQL treats each `NULL` as distinct, so multiple cancelled/pending bookings can coexist without violating uniqueness. No two confirmed bookings can share the same PNR.
+
+The `UNIQUE` constraint on `pnr` automatically creates a unique index in PostgreSQL. A separate explicit index on `bookings(pnr)` is therefore redundant and must not be created — see §18.
 
 ---
 
@@ -704,7 +717,10 @@ coaches(train_id, coach_number)
 
 seats(coach_id, seat_number)
 
-bookings(pnr)
+-- bookings(pnr) is covered by the UNIQUE constraint and must NOT be
+-- created separately. A UNIQUE constraint in PostgreSQL automatically
+-- creates a unique index; a duplicate explicit index wastes storage
+-- and slows writes without any query benefit.
 bookings(user_id, journey_date)
 bookings(train_id, journey_date)
 
@@ -759,13 +775,23 @@ Mock Payment API
       ↓
 SUCCESS?
   /       \
- Yes       No
+ Yes       No (e.g. simulated failure)
   ↓         ↓
-Activate    Release holds
-booking     + cancel booking
+Activate    Insert FAILED audit record
+booking     Keep status PENDING_PAYMENT
+  ↓         Keep allocations HELD
+Assign PNR  Permit retry within 10m window
   ↓
-Generate PNR
-  ↓
+COMMIT / finalize
+```
+
+If the 10-minute hold deadline expires without successful payment:
+
+```text
+Hold Expiration (via eager cleanup or live clock check during payment)
+      ↓
+Release HELD allocations (status: RELEASED)
+Cancel booking (status: CANCELLED)
 COMMIT / finalize
 ```
 

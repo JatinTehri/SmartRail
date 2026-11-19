@@ -305,6 +305,16 @@ The following architecture/documentation work has been completed:
 - Development roadmap created.
 - AI development rules created.
 - Phase 1: Project scaffolding completed (Express backend, React/Vite frontend, Tailwind CSS, environment config, health endpoint, smoke tests).
+- Phase 1B: Database Migrations completed (all 17 application tables created across Migrations 001–005 with indexes, FKs, and check constraints; `schema_migrations` tracking active).
+- Phase 1B: Development Seed Data completed and verified (5 stations, 2 trains, 9 stops, 4 coaches, 276 seats, 11 food menu items; atomic transaction with advisory lock, strict `NODE_ENV === 'development'` guard, idempotent upserts).
+- Phase 2: Authentication completed and verified (User Registration, Login, Logout, Auth Middleware, and Current User Profile API with JWT in HttpOnly cookies, bcrypt hashing with 10 salt rounds, constant-time verification, anti-enumeration protection, and 29/29 tests passing).
+- Phase 3 — Stage 3.1 & 3.2: Station Search & Train Search APIs completed and verified (station search with ranked matching and wildcard escaping; train search with parameterized self-join on train_stops, forward stop_order enforcement, distance/duration calculation, coach class aggregation, optional class filtering, Asia/Kolkata timezone boundary handling, and comprehensive input validation; 25/25 train search tests passing, 66/66 total backend suite tests passing).
+- Phase 3 — Stage 3.3: Train Details & Route API completed and verified (GET /api/trains/:trainId returning train metadata, stops ordered by stop_order ASC with station metadata, arrival/departure times, distanceKm, and coaches with capacities and class codes; decoupled queries via Promise.all avoiding Cartesian product; 18/18 train details tests passing, 84/84 total backend suite tests passing).
+- Phase 3 — Stage 3.4: Seat Availability API completed and verified (GET /api/trains/:trainId/availability with segment overlap filtering, coach/seat aggregation, RAC slots calculation, mutual exclusivity between confirmed berths and RAC quotas; 24/24 availability tests passing, 108/108 total backend suite tests passing).
+- Phase 3 — Stage 3.5: Train Search UI completed and verified (Navbar.jsx, StationSelect.jsx with 300ms debouncing, TrainSearch.jsx with Asia/Kolkata date handling, TrainCard.jsx with responsive tags and View Availability link; 0 lint errors, clean Vite build).
+- Phase 3 — Stage 3.6: Coach & Seat Availability UI completed and verified (SeatAvailability.jsx with journey context, overall Confirmed and RAC quota summary cards, interactive coach selector tabs; SeatLayout.jsx with MAIN/SIDE berth partitioning, corridor walkway divider, emerald green confirmed availability, amber RAC slot status tracking, window indicators, and status legend; 0 lint errors, clean Vite build).
+- Phase 4 — Stage 4.1: Passenger Profile APIs completed and verified (GET /api/passengers, POST /api/passengers, DELETE /api/passengers/:id with JWT authentication, multi-tenant row isolation, DTO formatting, transactional reference unlinking preserving booking snapshots, and 20/20 integration tests passing; 128/128 total backend tests passing).
+- Phase 4 — Stage 4.2: Booking Creation API & Temporary Seat Holds completed and verified (POST /api/bookings with input validation, saved profile authoritative resolution, SmartRail Demo Fare Model across 7 classes, 10-minute hold expiration cleanup, row-level locking via SELECT ... FOR UPDATE OF s, segregated Confirmed/RAC pools, provisional response status transparency, and real PostgreSQL concurrency testing resolving to one 201 and one 409; 40 new tests passing, 168/168 total backend suite tests passing).
 
 ### Documentation currently available
 
@@ -329,7 +339,7 @@ SCHEMA_DESIGN.md
 
 ## 8. Currently Working On
 
-**Phase 1 complete. Ready for Phase 1b: PostgreSQL connection, schema creation, and seed data.**
+**Phase 4 — Stage 4.3 (Mock Payment Processing & Booking Confirmation) completed and verified across all 5 implementation & audit steps. Ready to plan Phase 4.4 / Phase 5.**
 
 ---
 
@@ -339,20 +349,36 @@ SCHEMA_DESIGN.md
 2. ~~Initialize the Express backend.~~ (Done — Phase 1)
 3. ~~Initialize the React frontend.~~ (Done — Phase 1)
 4. ~~Configure environment variables.~~ (Done — Phase 1)
-5. Set up PostgreSQL connection.
-6. Create database migrations/schema.
-7. Add development seed data.
-8. Implement authentication.
-9. Implement station and train search.
-10. Implement availability.
-11. Implement basic booking.
-12. Implement the Smart Seat Allocation Engine.
-13. Add food, complaints, emergency, notifications, and admin features.
-14. Test, polish, and deploy.
+5. ~~Set up PostgreSQL connection.~~ (Done — Phase 1B)
+6. ~~Create database migrations/schema (17 tables).~~ (Done — Phase 1B)
+7. ~~Add development seed data.~~ (Done — Phase 1B)
+8. ~~Implement authentication.~~ (Done — Phase 2)
+9. ~~Implement station and train search.~~ (Done — Phase 3 Stages 3.1 & 3.2)
+10. ~~Implement train details and route lookup.~~ (Done — Phase 3 Stage 3.3)
+11. ~~Implement seat availability API.~~ (Done — Phase 3 Stage 3.4)
+12. ~~Implement passenger profiles, provisional booking creation, and temporary seat holds.~~ (Done — Phase 4 Stages 4.1 & 4.2)
+13. ~~Implement mock payment processing, retryable failures, atomic PNR issuance, and booking confirmation.~~ (Done — Phase 4 Stage 4.3)
+14. Implement booking history and cancellation APIs.
+15. Implement the Smart Seat Allocation Engine (preference scoring, group seating, safety, RAC pairing).
+16. Add food, complaints, emergency, notifications, and admin features.
+17. Test, polish, and deploy.
 
 ---
 
 ## 10. Important Decisions Log
+
+### Phase 4.3 Architectural Decisions (Payment & Confirmation)
+
+- **Retryable Failed Payment Policy**: When payment simulation fails (`simulateFailure: true`), a `FAILED` payment audit row is inserted into `payments`, but the booking stays `PENDING_PAYMENT` and allocations stay `HELD` within the original 10-minute hold window. The hold deadline is not extended. If the window passes without a successful payment, normal hold cleanup releases the held seats and marks the booking `CANCELLED`.
+- **Hierarchical Row Locking**: Ascending lock hierarchy: `seat_allocations` (`sa.id ASC FOR UPDATE`) $\to$ `booking_passengers` (`bp.id ASC FOR UPDATE`) $\to$ `bookings` (`b.id ASC FOR UPDATE`). Matches eager hold-expiration cleanup ordering, eliminating circular lock wait conditions and preventing PostgreSQL deadlocks (40P01).
+- **Live Database Clock Expiration Check**: Evaluates `(b.created_at + INTERVAL '10 minutes' < clock_timestamp())` after locks are acquired. This guarantees that if a payment transaction waits behind locks past the 10-minute boundary, it detects expiration via true wall-clock time rather than transaction start time `NOW()`, releases holds, and returns HTTP 410 `BOOKING_HOLD_EXPIRED`.
+- **Atomic PNR Generation & SAVEPOINT Collision Retries**: Generates 10-character unique uppercase alphanumeric PNRs (`SR` prefix + 8 random chars from `[0-9A-Z]`). Uses a PostgreSQL SAVEPOINT retry loop (up to 5 attempts) catching only `23505 bookings_pnr_key` collisions without rolling back the outer transaction.
+- **Idempotency & Corruption Detection**: Replaying payment for an already-confirmed booking safely detects existing confirmation, commits no additional payment rows, and returns HTTP 200 with `isIdempotent: true`. Throws HTTP 500 if a confirmed booking lacks a payment record or a pending booking already has one.
+- **Full Concurrency & Race Verification**: Verified via permanent automated tests in `payment.concurrency.test.js`:
+  1. Two concurrent payments for the same booking serialize cleanly via row locks: both return HTTP 200 (one original, one idempotent), exactly one `SUCCESS` payment record, exactly one PNR.
+  2. Race between payment and hold expiration cleanup resolves consistently without deadlocks: payment confirms and locks out expiry, or expiry cancels and rejects payment with clean status.
+  3. Waiting on row locks until after the deadline safely detects expiration via `clock_timestamp()` and cancels the hold.
+- **Test Suite Counts**: 6 payment suites (98 tests passing) and 19 backend regression suites (270 tests passing 100%). Seed counts unchanged.
 
 ### Keep the stack simple
 
@@ -409,6 +435,19 @@ SCHEMA_DESIGN.md
 ### Admin V1 scope
 **Reason:** Keep the portfolio admin practical: trains, stations, coaches/seats, bookings, complaints, and emergencies.
 
+### Stateless JWT Logout Behavior
+**Reason:** Logout clears the `smartrail_token` cookie from the client's browser, preventing normal clients from accessing protected routes. In this stateless design, an already-issued JWT intercepted or copied elsewhere remains cryptographically valid until its `exp` time arrives. Server-side token blacklists (e.g. via Redis) or refresh tokens are intentionally excluded from V1 to keep the portfolio architecture practical and maintainable.
+
+### Asia/Kolkata Business Date Validation
+**Reason:** Indian Railways journeys operate strictly under Indian Standard Time (IST). Calculating "today" using UTC ISO date strings causes off-by-one calendar errors between 00:00 and 05:30 IST. Using `Intl.DateTimeFormat` with `timeZone: 'Asia/Kolkata'` ensures business dates align with Indian railway operations without introducing third-party date libraries.
+
+### Seat Availability Segment Overlap & Mutual Exclusivity (Stage 3.4)
+**Reason:** SmartRail seats can be reused on non-overlapping journey segments. Overlaps are detected mathematically with `existing_from < requested_to AND existing_to > requested_from`. Mutual exclusivity guarantees that:
+1. A physical berth with even one RAC slot occupied cannot be sold as a confirmed berth.
+2. An RAC-capable berth booked as confirmed offers 0 RAC slots.
+3. HELD and ACTIVE allocations are treated as occupied, while CANCELLED and RELEASED do not block seats.
+4. Confirmed and RAC capacities are presented independently and never summed as total physical seats.
+
 ---
 
 ## 11. Problems and Solutions
@@ -436,6 +475,76 @@ Frontend availability is not authoritative during concurrent booking.
 
 Date:
 YYYY-MM-DD
+```
+
+```text
+Problem:
+Running seed scripts with automatic NODE_ENV fallback to development can accidentally execute against staging or production databases if invoked carelessly.
+
+Solution:
+Load backend/.env before checking NODE_ENV, enforce strict equality (process.env.NODE_ENV !== 'development'), refuse fallback defaults, and abort execution with exit code 1 if NODE_ENV is unset or not 'development'.
+
+Why:
+Seed data must never be allowed to run against non-development environments or wipe/override production data.
+
+Date:
+2026-11-03
+```
+
+```text
+Problem:
+Initial 2A coach berth calculation proposed 20 Lower, 20 Upper, 6 Side Lower, 6 Side Upper, which mathematically contradicted the coach configuration of 8 full bays (6 berths each) + 1 partial bay (4 berths: 2 Lower, 2 Upper, 0 Side berths).
+
+Solution:
+Corrected mathematical distribution to: 18 Lower (16 full + 2 partial), 18 Upper (16 full + 2 partial), 8 Side Lower, 8 Side Upper = 52 total. Window berths = 17 (8 Side Lower: 5, 11, 17, 23, 29, 35, 41, 47; 9 Main Lower: 1, 7, 13, 19, 25, 31, 37, 43, 49). RAC-capable = 1 (Seat 5).
+
+Why:
+Every physical berth and seat number in the database must strictly align with coach geometry and database constraints.
+
+Date:
+2026-11-03
+```
+
+```text
+Problem:
+Concurrent seed script executions could cause race conditions or duplicate insertions before unique constraint checks.
+
+Solution:
+Acquire a PostgreSQL transaction-level advisory lock at the start of the seed transaction using SELECT pg_advisory_xact_lock(hashtext('smartrail_seed_lock')::bigint);.
+
+Why:
+Advisory locks automatically release on commit or rollback and prevent concurrent execution of the seed runner.
+
+Date:
+2026-11-03
+```
+
+```text
+Problem:
+PostgreSQL error 42703 (undefined column) occurred when attempting to query distance from `train_stops` using `distance_from_source`.
+
+Solution:
+Inspected Migration 002 (`002_train_structure.sql`) and `docs/DATABASE.md` to confirm the authoritative schema uses `distance_km NUMERIC(8,2)` with composite unique constraints `(train_id, stop_order)` and `(train_id, station_id)`. Updated the query and repository to use `distance_km`.
+
+Why:
+Migration DDL is the absolute source of truth for database columns, types, and constraints.
+
+Date:
+2026-11-03
+```
+
+```text
+Problem:
+Comparing journey dates against UTC ISO dates caused timezone boundary discrepancies: in the early morning hours in India (e.g. 01:30 IST), UTC is still on the previous day's calendar date, allowing yesterday's Indian railway date to be accepted.
+
+Solution:
+Implemented `getTodayIST(referenceDate)` using `Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata' })` with `formatToParts()` to deterministically determine today's date in `YYYY-MM-DD` according to Indian Standard Time.
+
+Why:
+SmartRail serves Indian railway routes and must enforce calendar date validation according to Indian business time.
+
+Date:
+2026-11-03
 ```
 
 ---
