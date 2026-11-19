@@ -37,3 +37,4 @@ uploads/
 *.tmp
 *.temp
 scratch/
+.agents/
